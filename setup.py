@@ -55,30 +55,39 @@ def run_post_install():
     # Step 4: Setup LigandMPNN
     print("🧬 [4/6] Setting up LigandMPNN...")
     try:
-        # Find LigandMPNN directory
+        # Find LigandMPNN directory - check multiple locations
         ligandmpnn_dir = None
         
-        # Check in package directory
-        for site_packages in sys.path:
-            potential_path = Path(site_packages) / 'LigandMPNN'
-            if potential_path.exists() and (potential_path / 'get_model_params.sh').exists():
-                ligandmpnn_dir = potential_path
-                break
+        # Check current directory first
+        if Path('LigandMPNN').exists():
+            ligandmpnn_dir = Path('LigandMPNN')
+        
+        # Check in site-packages
+        if not ligandmpnn_dir:
+            for site_packages in sys.path:
+                potential_path = Path(site_packages) / 'LigandMPNN'
+                if potential_path.exists() and (potential_path / 'get_model_params.sh').exists():
+                    ligandmpnn_dir = potential_path
+                    break
         
         if ligandmpnn_dir and ligandmpnn_dir.exists():
             model_params_dir = ligandmpnn_dir / 'model_params'
+            model_params_dir.mkdir(exist_ok=True)
             get_params_script = ligandmpnn_dir / 'get_model_params.sh'
             
             if get_params_script.exists():
                 # Make script executable and run it
                 os.chmod(get_params_script, 0o755)
-                subprocess.check_call(
+                result = subprocess.run(
                     ['bash', str(get_params_script), str(model_params_dir)],
                     cwd=str(ligandmpnn_dir),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE
+                    capture_output=True,
+                    text=True
                 )
-                print("✅ LigandMPNN model parameters downloaded\n")
+                if result.returncode == 0:
+                    print("✅ LigandMPNN model parameters downloaded\n")
+                else:
+                    print(f"⚠️  LigandMPNN setup had issues: {result.stderr}\n")
             else:
                 print("⚠️  get_model_params.sh not found\n")
         else:
@@ -93,6 +102,10 @@ def run_post_install():
     try:
         # Try multiple possible locations
         possible_paths = []
+        
+        # Check current directory
+        if Path('boltz/utils/DAlphaBall.gcc').exists():
+            possible_paths.append(Path('boltz/utils/DAlphaBall.gcc'))
         
         # Add site-packages paths
         for site_dir in sys.path:
@@ -111,7 +124,7 @@ def run_post_install():
         for dalphaball in possible_paths:
             if dalphaball.exists():
                 os.chmod(dalphaball, 0o755)
-                print(f"✅ DAlphaBall.gcc set as executable\n")
+                print(f"✅ DAlphaBall.gcc set as executable at {dalphaball}\n")
                 found = True
                 break
         
@@ -174,8 +187,8 @@ setup(
     author_email='your.email@example.com',
     url='https://github.com/yourusername/boltz-design',
     
-    # Package discovery
-    packages=find_packages(include=['boltz*', 'LigandMPNN*']),
+    # Package discovery - find ALL packages, don't restrict
+    packages=find_packages(where='.', exclude=['tests*', 'docs*', 'examples*']),
     include_package_data=True,
     
     # Python version requirement
@@ -220,10 +233,9 @@ setup(
         'develop': PostDevelopCommand,
     },
     
-    # Include binary files and scripts
+    # Include binary files and scripts - use MANIFEST.in instead
     package_data={
-        'boltz': ['utils/DAlphaBall.gcc', 'utils/*'],
-        'LigandMPNN': ['*.sh', '*.py', '*.json', 'model_params/*'],
+        '': ['*.gcc', '*.sh', '*.json', '*.yaml', '*.yml'],
     },
     
     # Don't create zip file (needed for binary executable)
