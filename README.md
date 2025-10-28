@@ -1,5 +1,10 @@
 # Protein-Hunter 😈
 
+
+<p align="center">
+  <img src="./protein_hunter.png" alt="Protein Hunter" width="500"/>
+</p>
+
 > 📄 **Paper**: [Protein Hunter: exploiting structure hallucination
 within diffusion for protein design](https://www.biorxiv.org/content/10.1101/2025.10.10.681530v2.full.pdf)  
 > 🚀 **Colab**: https://colab.research.google.com/drive/1JBP7iMPLKiJrhjUlFfi0ShQcu8vHn2gI#scrollTo=CzE1iBF-ZCI0
