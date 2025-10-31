@@ -17,7 +17,19 @@ def sample_seq(length: int, exclude_P: bool = True, frac_X: float = 0.0) -> str:
   random.shuffle(seq_list)
   return "".join(seq_list)
 
-def extract_sequence_from_pdb(pdb_path, chain_id):
+
+# Amino acid conversion dict
+restype_3to1 = {
+    'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
+    'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
+    'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
+    'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y',
+    'MSE': 'M',
+}
+
+
+
+def extract_sequence_from_structure(pdb_path, chain_id):
     """Extract sequence from PDB file"""
     structure = gemmi.read_structure(str(pdb_path))
 
@@ -33,15 +45,6 @@ def extract_sequence_from_pdb(pdb_path, chain_id):
 
     raise ValueError(f"Chain {chain_id} not found in {pdb_path}")
 
-
-# Amino acid conversion dict
-restype_3to1 = {
-    'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
-    'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
-    'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
-    'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y',
-    'MSE': 'M',
-}
 
 def extend(a, b, c, L, A, D):
     """
@@ -472,7 +475,7 @@ def optimize_protein_design(
     if target_pdb is not None and target_seq is None:
         if target_chain is None:
             raise ValueError("target_chain must be specified when using target_pdb")
-        target_seq = extract_sequence_from_pdb(target_pdb, target_chain)
+        target_seq = extract_sequence_from_structure(target_pdb, target_chain)
         if verbose:
             print(f"{prefix} | Extracted target sequence from {target_pdb} chain {target_chain}: {target_seq[:60]}...")
 

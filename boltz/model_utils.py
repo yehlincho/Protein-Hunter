@@ -15,6 +15,7 @@ import pandas as pd
 import py3Dmol
 import torch
 from prody import parsePDB
+import gemmi
 
 from boltz.data.feature.featurizer import BoltzFeaturizer
 from boltz.data.feature.featurizerv2 import Boltz2Featurizer
@@ -42,6 +43,10 @@ from boltz.main import (
 )
 from boltz.model.models.boltz1 import Boltz1
 from boltz.model.models.boltz2 import Boltz2
+from Bio.PDB import MMCIFParser, PDBParser
+from Bio.PDB.PDBIO import PDBIO
+import logging
+
 
 # Existing filter
 warnings.filterwarnings("ignore", message=".*requires_grad=True.*")
@@ -100,6 +105,58 @@ def get_CA(x):
                     z = float(line[46 : 46 + 8])
                     xyz.append([x, y, z])
     return np.array(xyz)
+
+
+
+def get_CA_and_sequence(structure_file, chain_id="A"):
+    # Determine file type and use appropriate parser
+    if structure_file.endswith(".cif"):
+        parser = MMCIFParser(QUIET=True)
+    elif structure_file.endswith(".pdb"):
+        parser = PDBParser(QUIET=True)
+    else:
+        raise ValueError("File must be either .cif or .pdb format")
+
+    structure = parser.get_structure("structure", structure_file)
+    xyz = []
+    sequence = []
+    aa_map = {
+        "ALA": "A",
+        "ARG": "R",
+        "ASN": "N",
+        "ASP": "D",
+        "CYS": "C",
+        "GLU": "E",
+        "GLN": "Q",
+        "GLY": "G",
+        "HIS": "H",
+        "ILE": "I",
+        "LEU": "L",
+        "LYS": "K",
+        "MET": "M",
+        "PHE": "F",
+        "PRO": "P",
+        "SER": "S",
+        "THR": "T",
+        "TRP": "W",
+        "TYR": "Y",
+        "VAL": "V",
+    }
+
+    model = structure[0]  # Get first model (default for most structures)
+
+    if chain_id in model:
+        chain = model[chain_id]
+        for residue in chain:
+            if "CA" in residue:
+                xyz.append(residue["CA"].coord)
+                sequence.append(aa_map.get(residue.resname, "X"))
+    else:
+        raise ValueError(f"Chain {chain_id} not found in {structure_file}")
+
+    return xyz, sequence
+
+
 
 
 def np_kabsch(a, b, return_v=False):
@@ -389,6 +446,34 @@ def sample_seq(length: int, exclude_P: bool = True, frac_X: float = 0.0) -> str:
     seq_list = ["X"] * num_x + random.choices(pool, k=length - num_x)
     random.shuffle(seq_list)
     return "".join(seq_list)
+
+
+
+# Amino acid conversion dict
+restype_3to1 = {
+    'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
+    'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
+    'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
+    'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y',
+    'MSE': 'M',
+}
+
+
+def extract_sequence_from_structure(pdb_path, chain_id):
+    """Extract sequence from PDB file"""
+    structure = gemmi.read_structure(str(pdb_path))
+
+    for model in structure:
+        for chain in model:
+            if chain.name == chain_id:
+                seq = []
+                for residue in chain:
+                    res_name = residue.name.strip().upper()
+                    if res_name in restype_3to1:
+                        seq.append(restype_3to1[res_name])
+                return ''.join(seq)
+
+    raise ValueError(f"Chain {chain_id} not found in {pdb_path}")
 
 
 def shallow_copy_tensor_dict(d):
