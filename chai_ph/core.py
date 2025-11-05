@@ -15,10 +15,11 @@ import py2Dmol
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
+
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from chai_ph.predict import ChaiFolder
 from LigandMPNN.wrapper import LigandMPNNWrapper
-
+from utils.alphafold_utils import run_alphafold_step
 
 def sample_seq(length: int, exclude_P: bool = True, frac_X: float = 0.0) -> str:
     aas = "ACDEFGHIKLMNQRSTVWY" + ("" if exclude_P else "P")
@@ -253,10 +254,6 @@ def prepare_refinement_coords(folder, parent_result, parent_batch_inputs):
     # --- Initialization ---
     n_atoms_new_padded = new_atom_mask.shape[0]
     new_padded = torch.zeros(n_atoms_new_padded, 3)
-
-    # FIX: These lines are no longer needed as parent_padded is assigned above.
-    # parent_padded = torch.zeros(parent_atom_mask.shape[0], 3)
-    # parent_padded[parent_atom_mask] = parent_coords
 
     # --- Chain Matching Logic (from Function 1) ---
     parent_atom_asym_id = parent_token_asym_id[parent_token_idx]
@@ -568,6 +565,7 @@ def optimize_protein_design(
     partial_diffusion=0.0,
     pde_cutoff_intra=1.5,
     pde_cutoff_inter=3.0,
+    high_iptm_threshold=0.8,
     omit_AA=None,
     bias_AA=None,
     randomize_template_sequence=True,
@@ -929,8 +927,7 @@ def optimize_protein_design(
     plddt_per_cycle = []
     alanine_count_per_cycle = []
 
-    # For saving predicted binder sequences when iptm > 0.8
- 
+    
 
     # Step 0
     prev = {"seq": initial_seq}
@@ -1003,10 +1000,10 @@ def optimize_protein_design(
             alanine_count_per_cycle.append(metric_dict["alanine_count"])
 
             print(f"{prefix} | Step {step + 1}: {msg}")
-            # If is_binder_design and iptm > 0.8, save the sequence in binder yaml format
+            # If is_binder_design and iptm > high_iptm_threshold, save the sequence in binder yaml format
             if (
                 is_binder_design
-                and metric_dict.get("iptm", 0.0) > 0.8
+                and metric_dict.get("iptm", 0.0) > high_iptm_threshold
                 and "seq" in new
             ):
                 sequences=[]
@@ -1231,8 +1228,15 @@ class ProteinHunter_Chai:
         self.show_visual = args.show_visual
         self.render_freq = args.render_freq
         self.gpu_id = args.gpu_id
-
         self.jobname = re.sub(r"\W+", "", self.jobname)
+        self.alphafold_dir = args.alphafold_dir
+        self.af3_docker_name = args.af3_docker_name
+        self.af3_database_settings = args.af3_database_settings
+        self.hmmer_path = args.hmmer_path
+        self.use_msa_for_af3 = args.use_msa_for_af3
+        self.work_dir = args.work_dir
+        self.high_iptm_threshold = args.high_iptm_threshold
+
 
         def check(folder):
             return os.path.exists(folder)
@@ -1261,7 +1265,7 @@ class ProteinHunter_Chai:
         if self.bias_AA == "":
             self.bias_AA = None
 
-        if self.show_visual:
+        if self.show_visual: 
             self.viewer = py2Dmol.view((600, 400), color="plddt")
             self.viewer.show()
         else:
@@ -1305,6 +1309,8 @@ class ProteinHunter_Chai:
             if self.viewer is not None:
                 self.viewer.new_obj()
 
+
+            prefix = f"./results_chai/{self.jobname}/run_{t}"
             x = optimize_protein_design(
                 self.folder,
                 self.designer,
@@ -1313,7 +1319,7 @@ class ProteinHunter_Chai:
                 target_pdb=None,
                 target_chain=None,
                 binder_mode=self.binder_mode,
-                prefix=f"./results_chai/{self.jobname}/run_{t}",
+                prefix=prefix,
                 n_steps=self.n_cycles,
                 num_trunk_recycles=self.n_recycles,
                 num_diffn_timesteps=self.n_diff_steps,
@@ -1322,6 +1328,7 @@ class ProteinHunter_Chai:
                 scale_temp_by_plddt=self.scale_temp_by_plddt,
                 use_alignment=True,
                 align_to="all",
+                high_iptm_threshold=self.high_iptm_threshold,
                 randomize_template_sequence=True,
                 omit_AA=self.omit_AA,
                 bias_AA=self.bias_AA,
@@ -1361,3 +1368,20 @@ class ProteinHunter_Chai:
                 self.folder.restore_state(X[best_n]["state"])
         else:
             print("Warning: No successful trials completed.")
+
+        high_iptm_yaml_dir = os.path.join(os.path.dirname(str(f"{prefix}/best.cif")), "high_iptm_yaml")
+        if os.path.exists(high_iptm_yaml_dir) and len(os.listdir(high_iptm_yaml_dir)) > 0:
+            success_dir = os.path.join(os.path.dirname(high_iptm_yaml_dir), "1_af3_rosetta_validation")
+            af_output_dir, af_output_apo_dir, af_pdb_dir, af_pdb_dir_apo = run_alphafold_step(
+                high_iptm_yaml_dir,
+                self.alphafold_dir,
+                self.af3_docker_name,
+                self.af3_database_settings,
+                self.hmmer_path,
+                success_dir,
+                self.work_dir,
+                binder_id="A",
+                gpu_id=self.gpu_id,
+                high_iptm=True,
+                use_msa_for_af3=self.use_msa_for_af3,
+            )

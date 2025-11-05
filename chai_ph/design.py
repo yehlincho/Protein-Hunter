@@ -1,3 +1,4 @@
+import os
 import argparse
 
 from core import ProteinHunter_Chai
@@ -101,6 +102,21 @@ def parse_args():
     )
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID")
 
+    parser.add_argument(
+        "--alphafold_dir", default=os.path.expanduser("~/alphafold3"), type=str
+    )
+    parser.add_argument("--af3_docker_name", default="alphafold3_yc", type=str)
+    parser.add_argument(
+        "--af3_database_settings", default="~/alphafold3/alphafold3_data_save", type=str
+    )
+    parser.add_argument(
+        "--hmmer_path",
+        default="~/.conda/envs/alphafold3_venv",
+        type=str,
+    )
+    parser.add_argument("--use_msa_for_af3", action="store_true")
+    parser.add_argument("--work_dir", default="", type=str)
+    parser.add_argument("--high_iptm_threshold", default=0.8, type=float)
     return parser.parse_args()
 
 

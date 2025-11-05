@@ -38,7 +38,7 @@ The setup script will automatically:
 - ✅ Create a conda environment with Python 3.10
 - ✅ Install all required dependencies
 - ✅ Set up a Jupyter kernel for notebooks
-- ✅ Download Boltz model weights
+- ✅ Download Boltz and Chai weights
 - ✅ Configure LigandMPNN and ProteinMPNN
 - ✅ Optionally install PyRosetta
 - ❌ AF3 must be installed separately
@@ -86,7 +86,9 @@ This will take you from an initial input to final designed protein structures an
 
 ## Protein Hunter (Chai Edition ☕) 
 
-> ⚠️ **Caution:** The Chai version is under active development. Current features include support for multiple chains, full AlphaFold (AF3) validation, and ongoing improvements. Expect rapid changes and new features in upcoming releases.
+> ⚠️ **Caution:** The Chai version is under active development
+- [x] Support for multiple targets
+- [x] Full AlphaFold (AF3) validation
 
 - **Unconditional protein design:**  
   Generate de novo proteins of a desired length:
@@ -116,6 +118,8 @@ This will take you from an initial input to final designed protein structures an
 🛠️ You can provide your initial designs as input and further improve their structures by iteratively redesigning and predicting them. Repeat as needed for optimal results!
 
 See the code in `refiner.ipynb` for example usage.
+
+For example, you can generate a design using Boltzgen, take the final output, and refine it further using the iterative pipeline. 
 
 ---
 

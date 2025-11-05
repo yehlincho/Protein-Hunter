@@ -1798,8 +1798,6 @@ def process_template_features(
         tmpl_chain_name_to_asym_id = {}
         for chain in template_structure.chains:
             tmpl_chain_name_to_asym_id[chain["name"]] = chain["asym_id"]
-        print("template_name", template_name)
-        print("templates", templates)
         for template in templates:
             offset = template.template_st - template.query_st
 

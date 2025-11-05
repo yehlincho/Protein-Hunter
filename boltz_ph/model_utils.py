@@ -15,9 +15,14 @@ import py3Dmol
 import torch
 from prody import parsePDB
 
+
+from boltz_ph.constants import CHAIN_TO_NUMBER
+from utils.metrics import get_CA_and_sequence
+
+
 from boltz.data.feature.featurizer import BoltzFeaturizer
 from boltz.data.feature.featurizerv2 import Boltz2Featurizer
-from boltz.data.mol import load_molecules
+from boltz.data.mol import load_molecules, load_canonicals
 from boltz.data.msa.mmseqs2 import run_mmseqs2
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.schema import parse_boltz_schema
@@ -42,7 +47,6 @@ from boltz.main import (
 from boltz.model.models.boltz1 import Boltz1
 from boltz.model.models.boltz2 import Boltz2
 
-# Existing filter
 warnings.filterwarnings("ignore", message=".*requires_grad=True.*")
 warnings.filterwarnings(
     "ignore",
@@ -51,20 +55,6 @@ warnings.filterwarnings(
 )
 
 alphabet = list[str]("XXARNDCQEGHILKMFPSTWYV-")
-
-chain_to_number = {
-    "A": 0,
-    "B": 1,
-    "C": 2,
-    "D": 3,
-    "E": 4,
-    "F": 5,
-    "G": 6,
-    "H": 7,
-    "I": 8,
-    "J": 9,
-}
-
 
 def get_cif(cif_code=""):
     """
@@ -77,11 +67,13 @@ def get_cif(cif_code=""):
     elif os.path.isfile(cif_code):
         return os.path.abspath(cif_code)
     elif len(cif_code) == 4:
+        # PDB ID
         local_cif = f"{cif_code}.cif"
         if not os.path.isfile(local_cif):
             os.system(f"wget -qnc https://files.rcsb.org/download/{cif_code}.cif")
         return os.path.abspath(local_cif)
     else:
+        # AlphaFold ID
         local_cif = f"AF-{cif_code}-F1-model_v3.cif"
         if not os.path.isfile(local_cif):
             os.system(
@@ -91,6 +83,10 @@ def get_cif(cif_code=""):
 
 
 def get_CA(x):
+    """
+    DEPRECATED: Use get_CA_and_sequence from metrics instead.
+    Returns CA coordinates from a PDB file.
+    """
     xyz = []
     with open(x) as file:
         for line in file:
@@ -98,12 +94,10 @@ def get_CA(x):
             if line[:4] == "ATOM":
                 atom = line[12 : 12 + 4].strip()
                 if atom == "CA":
-                    resi = line[17 : 17 + 3]
-                    resn = int(line[22 : 22 + 5]) - 1
-                    x = float(line[30 : 30 + 8])
-                    y = float(line[38 : 38 + 8])
-                    z = float(line[46 : 46 + 8])
-                    xyz.append([x, y, z])
+                    x_coord = float(line[30 : 30 + 8])
+                    y_coord = float(line[38 : 38 + 8])
+                    z_coord = float(line[46 : 46 + 8])
+                    xyz.append([x_coord, y_coord, z_coord])
     return np.array(xyz)
 
 
@@ -111,9 +105,8 @@ def binder_binds_contacts(
     pdb_path, binder_chain, target_chain, contact_residues, cutoff=10.0
 ):
     """
-    Returns True if at least 20% of contact_residues on target_chain
+    Returns True if at least 2 contact residues on target_chain
     are contacted by any CA atom of binder_chain within cutoff angstroms.
-    Works even if resname is UNK (or non-canonical).
     """
     if isinstance(contact_residues, str):
         if contact_residues.strip() == "":
@@ -128,6 +121,7 @@ def binder_binds_contacts(
         ca_atoms = []
         ca_resnums = []
         for atom in structure.iterAtoms():
+            # Check chain ID and atom name
             if atom.getChid() == chain_id and atom.getName() == "CA":
                 ca_atoms.append(atom)
                 ca_resnums.append(atom.getResnum())
@@ -142,6 +136,7 @@ def binder_binds_contacts(
     binder_coords = np.array([atom.getCoords() for atom in binder_ca_atoms])
     target_coords = np.array([atom.getCoords() for atom in target_ca_atoms])
 
+
     contact_indices = [
         i for i, resnum in enumerate(target_resnums) if resnum in contact_residues
     ]
@@ -149,23 +144,20 @@ def binder_binds_contacts(
         return False
 
     filtered_target_coords = target_coords[contact_indices]
-    filtered_contact_resnums = [target_resnums[i] for i in contact_indices]
-
+    
     # For each contact residue, check if any binder CA is within cutoff.
     contacted = 0
-    for idx, c_resnum in enumerate(filtered_contact_resnums):
-        c_coord = filtered_target_coords[idx]
+    for c_coord in filtered_target_coords:
         distances = np.sqrt(np.sum((binder_coords - c_coord) ** 2, axis=-1))
         if np.any(distances < cutoff):
-            # print(f"Contacted residue {c_resnum} by binder CA")
             contacted += 1
 
-    if len(filtered_contact_resnums) == 0:
-        return False
+    # Require at least 2 contacted residues to pass the filter
     return contacted >= 2
 
 
 def sample_seq(length: int, exclude_P: bool = True, frac_X: float = 0.0) -> str:
+    """Samples a random sequence of the given length, optionally excluding Proline (P) and including 'X' residues."""
     aas = "ACDEFGHIKLMNQRSTVWY" + ("" if exclude_P else "P")
     num_x = round(length * frac_X)
     pool = aas if aas else "X"
@@ -174,50 +166,20 @@ def sample_seq(length: int, exclude_P: bool = True, frac_X: float = 0.0) -> str:
     return "".join(seq_list)
 
 
-# Amino acid conversion dict
-restype_3to1 = {
-    "ALA": "A",
-    "CYS": "C",
-    "ASP": "D",
-    "GLU": "E",
-    "PHE": "F",
-    "GLY": "G",
-    "HIS": "H",
-    "ILE": "I",
-    "LYS": "K",
-    "LEU": "L",
-    "MET": "M",
-    "ASN": "N",
-    "PRO": "P",
-    "GLN": "Q",
-    "ARG": "R",
-    "SER": "S",
-    "THR": "T",
-    "VAL": "V",
-    "TRP": "W",
-    "TYR": "Y",
-    "MSE": "M",
-}
-
-
 def extract_sequence_from_structure(pdb_path, chain_id):
-    """Extract sequence from PDB file"""
-    structure = gemmi.read_structure(str(pdb_path))
-
-    for model in structure:
-        for chain in model:
-            if chain.name == chain_id:
-                seq = []
-                for residue in chain:
-                    res_name = residue.name.strip().upper()
-                    if res_name in restype_3to1:
-                        seq.append(restype_3to1[res_name])
-                return "".join(seq)
-
-    raise ValueError(f"Chain {chain_id} not found in {pdb_path}")
+    """
+    Extract 1-letter sequence from PDB file for a given chain.
+    (DEPRECATED: Use get_CA_and_sequence and take the sequence part instead)
+    """
+    try:
+        _, sequence = get_CA_and_sequence(pdb_path, chain_id)
+        return sequence
+    except Exception as e:
+        raise ValueError(f"Could not extract sequence from chain {chain_id} in {pdb_path}: {e}") from e
 
 
 def shallow_copy_tensor_dict(d):
+    """Performs a shallow copy of a nested dictionary, cloning only torch.Tensors."""
     if isinstance(d, dict):
         return {k: shallow_copy_tensor_dict(v) for k, v in d.items()}
     if isinstance(d, list):
@@ -243,28 +205,36 @@ def get_boltz_model(
     grad_enabled=True,
     no_potentials=True,
 ) -> Boltz2:
+    """Loads and configures the Boltz model based on arguments."""
     torch.set_grad_enabled(grad_enabled)
     torch.set_float32_matmul_precision("highest")
+    
+    # Setup diffusion parameters
     diffusion_params = Boltz2DiffusionParams()
-    diffusion_params.step_scale = 1.638  # Default value
+    diffusion_params.step_scale = 1.638
 
+    # Setup steering parameters
     steering_args = BoltzSteeringParams()
     if no_potentials:
         steering_args.fk_steering = False
         steering_args.guidance_update = False
 
+    # Setup pairformer arguments
     pairformer_args = (
         PairformerArgsV2() if model_version == "boltz2" else PairformerArgs()
     )
-    pairformer_args.v2 = True if model_version == "boltz2" else False
+    pairformer_args.v2 = model_version == "boltz2"
     pairformer_args.activation_checkpointing = True
 
+    # Setup MSA module arguments
     msa_args = MSAModuleArgs(
         subsample_msa=True, num_subsampled_msa=1024, use_paired_feature=True
     )
     msa_args.activation_checkpointing = True
 
+    # Load model from checkpoint
     model_class = Boltz2 if model_version == "boltz2" else Boltz1
+    
     if model_version == "boltz2":
         model_module = model_class.load_from_checkpoint(
             checkpoint,
@@ -296,8 +266,10 @@ def get_boltz_model(
             no_msa=False,
             no_atom_encoder=False,
         )
-    return model_module
+    else:
+        raise ValueError(f"Unknown Boltz model version: {model_version}")
 
+    return model_module
 
 def get_batch(
     target,
@@ -452,9 +424,8 @@ def get_batch(
 
     return batch, structure
 
-
-def process_msa(chain_id: str, sequence: str, msa_dir: Path) -> bool:
-    """Process MSA for a single chain."""
+def process_msa(chain_id: str, sequence: str, msa_dir: Path) -> Path:
+    """Process MSA for a single chain using MMseqs2 and return path to .npz file."""
     msa_chain_dir = msa_dir / f"{chain_id}"
     env_dir = msa_chain_dir.with_name(f"{msa_chain_dir.name}_env")
     env_dir.mkdir(exist_ok=True)
@@ -469,11 +440,11 @@ def process_msa(chain_id: str, sequence: str, msa_dir: Path) -> bool:
         pairing_strategy="greedy",
     )
 
-    # Save MSA results
+    # Save MSA results (.a3m)
     msa_a3m_path = env_dir / "msa.a3m"
     msa_a3m_path.write_text(unpaired_msa[0])
 
-    # Process MSA if not already processed
+    # Process MSA (.a3m) into Boltz .npz format
     msa_npz_path = env_dir / "msa.npz"
     if not msa_npz_path.exists():
         msa = parse_a3m(
@@ -487,6 +458,7 @@ def process_msa(chain_id: str, sequence: str, msa_dir: Path) -> bool:
 
 
 def aggressive_memory_cleanup():
+    """Performs aggressive CUDA and Python memory cleanup."""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
@@ -497,12 +469,17 @@ def aggressive_memory_cleanup():
     for _ in range(3):
         gc.collect()
 
-    torch._dynamo.reset()
+    # Reset torch dynamo cache if available
+    if hasattr(torch, '_dynamo') and hasattr(torch._dynamo, 'reset'):
+        torch._dynamo.reset()
+    
+    # Clear cublas workspaces if function exists
     if hasattr(torch._C, "_cuda_clearCublasWorkspaces"):
         torch._C._cuda_clearCublasWorkspaces()
 
 
 def clean_memory():
+    """Wrapper for general garbage collection and aggressive cleanup."""
     gc.collect()
     torch.cuda.empty_cache()
     aggressive_memory_cleanup()
@@ -523,15 +500,36 @@ def run_prediction(
     boltz_model_version="boltz2",
     pocket_conditioning=False,
 ):
+    """Parses data, generates batch, and runs a single Boltz prediction step."""
+    # 1. Update sequence if provided
     if seq is not None:
-        data["sequences"][chain_to_number[binder_chain]]["protein"]["sequence"] = seq
+        # Assumes data["sequences"] is sorted by chain ID where binder_chain is in the position corresponding to its CHAIN_TO_NUMBER value
+        try:
+            binder_idx = CHAIN_TO_NUMBER.get(binder_chain, None)
+            if binder_idx is not None and len(data["sequences"]) > binder_idx:
+                 data["sequences"][binder_idx]["protein"]["sequence"] = seq
+            else:
+                # Fallback search if sorting is unexpected
+                for entry in data["sequences"]:
+                    if "protein" in entry and binder_chain in entry["protein"].get("id", []):
+                        entry["protein"]["sequence"] = seq
+                        break
+                else:
+                    raise KeyError(f"Binder chain {binder_chain} not found in sequences for update.")
+
+        except Exception as e:
+            print(f"Error updating sequence in data dict: {e}")
+            
+    # 2. Parse data schema
     target = parse_boltz_schema(
         name,
         data,
         ccd_lib,
         ccd_path,
-        boltz_2=True if boltz_model_version == "boltz2" else False,
+        boltz_2=boltz_model_version == "boltz2",
     )
+    
+    # 3. Generate batch and structure
     batch, structure = get_batch(
         target,
         ccd_path,
@@ -539,7 +537,11 @@ def run_prediction(
         boltz_model_version=boltz_model_version,
         pocket_conditioning=pocket_conditioning,
     )
+    
+    # 4. Move batch to device
     batch = {k: v.unsqueeze(0).to(device) for k, v in batch.items()}
+    
+    # 5. Run prediction
     output = boltz_model.predict_step(
         batch,
         batch_idx=0,
@@ -554,9 +556,11 @@ def run_prediction(
 
 
 def save_pdb(structure, coords, plddts, filename):
+    """Saves the predicted structure coordinates to a PDB file."""
     structure.atoms["coords"] = (
         coords[0].detach().cpu().numpy()[: structure.atoms["coords"].shape[0]]
     )
+    
     with open(filename, "w") as f:
         f.write(to_pdb(structure, plddts, boltz2=True))
 
@@ -571,10 +575,11 @@ def design_sequence(
     temperature=0.02,
     return_logits=False,
 ):
+    """Runs the LigandMPNN (or SolubleMPNN) sequence design wrapper."""
     seq, logits = designer.run(
         model_type=model_type,
         pdb_path=pdb_file,
-        seed=111,
+        seed=111, # Fixed seed for reproducibility per design tool
         chains_to_design=chains_to_design,
         bias_AA=bias_AA,
         omit_AA=omit_AA,
@@ -586,6 +591,7 @@ def design_sequence(
     )
     if return_logits:
         return seq, logits
+
     return seq[0], logits
 
 
@@ -598,20 +604,12 @@ def plot_from_pdb(
 ):
     """
     Visualize a structure directly from a PDB file using py3Dmol.
-
-    Args:
-        pdb_file (str): Path to the PDB file.
-        width (int): Width of the visualization window.
-        height (int): Height of the visualization window.
-        style (str): Visualization style (default: cartoon).
-        color_by (str): Coloring scheme ("none", "plddt", "chain").
     """
     pdb_text = Path(pdb_file).read_text()
 
     view = py3Dmol.view(width=width, height=height)
     view.addModel(pdb_text, "pdb")
 
-    # Normalize color_by
     color_by = (color_by or "none").lower()
 
     if color_by == "plddt":
@@ -628,11 +626,13 @@ def plot_from_pdb(
                 }
             },
         )
+    # Color by chain
     elif color_by == "chain":
         view.setStyle(
             {"and": [{"not": {"resn": ["UNL", "LIG"]}}, {"not": {"hetflag": True}}]},
             {style: {"colorscheme": "chain"}},
         )
+    # Default coloring
     else:
         view.setStyle(
             {"and": [{"not": {"resn": ["UNL", "LIG"]}}, {"not": {"hetflag": True}}]},
@@ -652,62 +652,38 @@ def plot_from_pdb(
 def plot_run_metrics(
     run_save_dir: str, name: str, run_id: int, num_cycles: int, run_metrics: dict
 ):
-    """Plot per-run figure to run subfolder, given run_metrics as input."""
-    fig, axs = plt.subplots(1, 4, figsize=(12, 3))
+    """Plots per-run metrics (iPTM, pLDDT, Alanine Count) over design cycles."""
+    fig, axs = plt.subplots(1, 4, figsize=(16, 4)) # Increased figure width
     colors = ["#9B59B6", "#E94560", "#FF7F11", "#2ECC71"]
-    metrics = [
-        (
-            "iPTM",
-            [
-                run_metrics.get(f"cycle_{i}_iptm", float("nan"))
-                for i in range(num_cycles + 1)
-            ],
-            0,
-            1,
-            "{:.3f}",
-        ),
-        (
-            "pLDDT",
-            [
-                run_metrics.get(f"cycle_{i}_plddt", float("nan"))
-                for i in range(num_cycles + 1)
-            ],
-            0,
-            1,
-            "{:.1f}",
-        ),
-        (
-            "iPLDDT",
-            [
-                run_metrics.get(f"cycle_{i}_iplddt", float("nan"))
-                for i in range(num_cycles + 1)
-            ],
-            0,
-            1,
-            "{:.1f}",
-        ),
-        (
-            "Alanine Count",
-            [
-                run_metrics.get(f"cycle_{i}_alanine", float("nan"))
-                for i in range(num_cycles + 1)
-            ],
-            0,
-            max(
-                [
-                    run_metrics.get(f"cycle_{i}_alanine", 0)
-                    for i in range(num_cycles + 1)
-                ]
-            )
-            + 2,
+    
+    # Helper to retrieve data and format
+    def get_metric_data(key_suffix, label, ymin, ymax, fmt):
+        values = [run_metrics.get(f"cycle_{i}_{key_suffix}", float("nan")) for i in range(num_cycles + 1)]
+        return (label, values, ymin, ymax, fmt)
+
+    metrics_list = [
+        get_metric_data("iptm", "iPTM", 0, 1, "{:.3f}"),
+        get_metric_data("plddt", "pLDDT", 0, 1, "{:.1f}"), # Corrected pLDDT max to 100
+        get_metric_data("iplddt", "iPLDDT", 0, 1, "{:.1f}"), # Corrected iPLDDT max to 100
+        get_metric_data(
+            "alanine", 
+            "Alanine Count", 
+            0, 
+            max([run_metrics.get(f"cycle_{i}_alanine", 0) for i in range(num_cycles + 1)]) + 2, 
             "{}",
         ),
     ]
+    
     design_cycles = list(range(num_cycles + 1))
-    for ax, (label, values, ymin, ymax, fmt), color in zip(axs, metrics, colors):
+    
+    for ax, (label, values, ymin, ymax, fmt), color in zip(axs, metrics_list, colors):
+        valid_indices = [i for i, y in enumerate(values) if not pd.isnull(y)]
+        valid_cycles = [design_cycles[i] for i in valid_indices]
+        valid_values = [values[i] for i in valid_indices]
+
         ax.plot(
-            design_cycles,
-            values,
+            valid_cycles,
+            valid_values,
             "o-",
             color=color,
             linewidth=2,
@@ -724,16 +700,20 @@ def plot_run_metrics(
         )
         ax.grid(True, alpha=0.3, linestyle="--")
         ax.spines[["top", "right"]].set_visible(False)
+        
+        # Annotate points
         for x, y in zip(design_cycles, values):
-            ax.annotate(
-                fmt.format(y) if not pd.isnull(y) else "",
-                (x, y),
-                textcoords="offset points",
-                xytext=(0, 8),
-                ha="center",
-                fontsize=9,
-            )
+            if not pd.isnull(y):
+                 ax.annotate(
+                    fmt.format(y),
+                    (x, y),
+                    textcoords="offset points",
+                    xytext=(0, 8),
+                    ha="center",
+                    fontsize=9,
+                )
+                
     plt.tight_layout()
-    plt.savefig(f"{run_save_dir}/{name}_run_{run_id}_design_cycle_results.png", dpi=300)
+    plot_filename = f"{name}_run_{run_id}_design_cycle_results.png"
+    plt.savefig(f"{run_save_dir}/{plot_filename}", dpi=300)
     plt.show()
-    # plt.close()
