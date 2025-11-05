@@ -2,579 +2,97 @@ import os
 import numpy as np
 import yaml
 import torch
-import random
-from torch import Tensor
-import gemmi
-from chai_lab.chai1 import _bin_centers
-from chai_lab.data.parsing.structure.entity_type import EntityType
-from typing import Optional
 import gc
-import sys
 import re
+import sys
 import py2Dmol
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
-
+from chai_lab.chai1 import _bin_centers
+from typing import Optional
+# Refactored imports
+# from chai_ph.predict import ChaiFolder
+# from chai_ph.helpers import (
+#     sample_seq,
+#     extract_sequence_from_pdb,
+#     clean_protein_sequence,
+#     is_smiles,
+#     get_backbone_coords_from_result,
+#     prepare_refinement_coords,
+#     compute_ca_rmsd,
+# )
+# from typing import Optional
+# from LigandMPNN.wrapper import LigandMPNNWrapper
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from chai_ph.predict import ChaiFolder
+from chai_ph.helpers import (
+    sample_seq,
+    extract_sequence_from_pdb,
+    clean_protein_sequence,
+    is_smiles,
+    get_backbone_coords_from_result,
+    prepare_refinement_coords,
+    compute_ca_rmsd,
+)
 from LigandMPNN.wrapper import LigandMPNNWrapper
 from utils.alphafold_utils import run_alphafold_step
 
-def sample_seq(length: int, exclude_P: bool = True, frac_X: float = 0.0) -> str:
-    aas = "ACDEFGHIKLMNQRSTVWY" + ("" if exclude_P else "P")
-    num_x = round(length * frac_X)
-    pool = aas if aas else "X"
-    seq_list = ["X"] * num_x + random.choices(pool, k=length - num_x)
-    random.shuffle(seq_list)
-    return "".join(seq_list)
 
-
-def extract_sequence_from_pdb(pdb_path, chain_id):
-    """Extract sequence from PDB file"""
-    structure = gemmi.read_structure(str(pdb_path))
-
-    for model in structure:
-        for chain in model:
-            if chain.name == chain_id:
-                seq = []
-                for residue in chain:
-                    res_name = residue.name.strip().upper()
-                    if res_name in restype_3to1:
-                        seq.append(restype_3to1[res_name])
-                return "".join(seq)
-
-    raise ValueError(f"Chain {chain_id} not found in {pdb_path}")
-
-
-# Amino acid conversion dict
-restype_3to1 = {
-    "ALA": "A",
-    "CYS": "C",
-    "ASP": "D",
-    "GLU": "E",
-    "PHE": "F",
-    "GLY": "G",
-    "HIS": "H",
-    "ILE": "I",
-    "LYS": "K",
-    "LEU": "L",
-    "MET": "M",
-    "ASN": "N",
-    "PRO": "P",
-    "GLN": "Q",
-    "ARG": "R",
-    "SER": "S",
-    "THR": "T",
-    "VAL": "V",
-    "TRP": "W",
-    "TYR": "Y",
-    "MSE": "M",
-}
-
-
-def is_smiles(seq):
-    """Detect if sequence is SMILES string vs protein sequence"""
-    smiles_chars = set("()[]=#@+-0123456789")
-    return bool(set(seq.upper()) & smiles_chars)
-
-
-def clean_protein_sequence(input_string: str) -> str:
-    """
-    Cleans a string to represent a protein sequence according to specific rules:
-    1. Removes all whitespace and non-alphabetic characters.
-    2. Converts all letters to uppercase.
-    3. Replaces any alphabetic character that is not a standard amino acid
-       one-letter code with 'X'.
-    """
-    # A set of the 20 standard one-letter amino acid codes for efficient lookup
-    amino_acids = {
-        "A",
-        "C",
-        "D",
-        "E",
-        "F",
-        "G",
-        "H",
-        "I",
-        "K",
-        "L",
-        "M",
-        "N",
-        "P",
-        "Q",
-        "R",
-        "S",
-        "T",
-        "V",
-        "W",
-        "Y",
-    }
-
-    clean_sequence = []
-    # Iterate through each character of the input string
-    for char in input_string:
-        # Rule 1 & 2: Only consider alphabetic characters
-        if char.isalpha():
-            # Rule 3: Convert to uppercase
-            upper_char = char.upper()
-            # Rule 4: Check if it's a valid amino acid or replace with 'X'
-            if upper_char in amino_acids:
-                clean_sequence.append(upper_char)
-            else:
-                clean_sequence.append("X")
-
-    return "".join(clean_sequence)
-
-
-def extract_sequence_from_structure(pdb_path, chain_id):
-    """Extract sequence from PDB file"""
-    structure = gemmi.read_structure(str(pdb_path))
-
-    for model in structure:
-        for chain in model:
-            if chain.name == chain_id:
-                seq = []
-                for residue in chain:
-                    res_name = residue.name.strip().upper()
-                    if res_name in restype_3to1:
-                        seq.append(restype_3to1[res_name])
-                return "".join(seq)
-
-    raise ValueError(f"Chain {chain_id} not found in {pdb_path}")
-
-
-def extend(a, b, c, L, A, D):
-    """
-    Place 4th atom given 3 atoms and ideal geometry. Works for single or batched inputs.
-
-    Args:
-        a, b, c: Atom positions [3] or [batch, 3]
-        L: Bond length from c to new atom
-        A: Bond angle at c (radians)
-        D: Dihedral angle (radians)
-
-    Returns:
-        Position of 4th atom [3] or [batch, 3]
-    """
-    ba = b - a
-    bc = b - c
-
-    x = bc * torch.rsqrt(torch.sum(bc * bc, dim=-1, keepdim=True) + 1e-8)
-    z = torch.linalg.cross(ba, x)
-    z = z * torch.rsqrt(torch.sum(z * z, dim=-1, keepdim=True) + 1e-8)
-    y = torch.linalg.cross(z, x)
-
-    cos_A, sin_A, cos_D, sin_D = np.cos(A), np.sin(A), np.cos(D), np.sin(D)
-    L_sin_A = L * sin_A
-
-    return c + L * cos_A * x + L_sin_A * cos_D * y - L_sin_A * sin_D * z
-
-
-def get_backbone_coords_from_result(state):
-    result = state.result
-    # PATCH 9 (GLOBAL): self.state.batch -> self._current_batch
-    # (state is passed in, so we use state.batch_inputs)
-    inputs = state.batch_inputs
-    if inputs is None:
-        # Fallback for old state objects, though ideally restore_state handles this
-        return torch.empty(0, 3, 3)
-
-    # Get the mask for existing tokens (e.g., [T,T,F, T,T,F])
-    token_mask = inputs["token_exists_mask"].squeeze(0).cpu()
-
-    # Get ALL (padded) backbone indices
-    all_bb_indices = inputs["token_backbone_frame_index"].squeeze(0).cpu()
-
-    # Select ONLY the indices for existing tokens
-    # This correctly gets all indices for chain 1, then all for chain 2
-    bb_indices = all_bb_indices[token_mask]
-
-    padded_coords = result["coords"].cpu()
-    if padded_coords.dim() == 3:
-        padded_coords = padded_coords.squeeze(0)
-
-    # This indexing is now correct
-    return padded_coords[bb_indices]
-
-
-def prepare_refinement_coords(folder, parent_result, parent_batch_inputs):
-    """
-    Prepare coordinates for refinement from parent structure.
-    - Combines robust chain-based matching (from Func 1) with
-      protein refinement logic (from Func 2).
-    - Protein tokens: Copies N, CA, C, O, CB from parent; places other sidechains at parent CB.
-    - Ligand tokens: Copied exactly if atom count matches.
-    """
-    # --- Setup from Function 1 (Robust Data Loading) ---
-
-    # FIX: parent_result["coords"] is already padded, so we just use it directly.
-    parent_padded = parent_result["coords"].cpu()
-
-    # Ensure parent_batch_inputs is not None and contains 'inputs'
-    if (
-        parent_batch_inputs is None
-    ):  # Removed "inputs" check as parent_batch_inputs *is* the inputs dict
-        raise ValueError(
-            "parent_batch_inputs is missing or invalid in prepare_refinement_coords"
-        )
-
-    parent_atom_mask = parent_batch_inputs["atom_exists_mask"][0].cpu()
-    parent_token_idx = parent_batch_inputs["atom_token_index"][0].cpu()
-    parent_token_asym_id = parent_batch_inputs["token_asym_id"][0].cpu()
-    parent_token_entity_type = parent_batch_inputs["token_entity_type"][0].cpu()
-
-    # Use folder.state.batch or folder.batch depending on your class structure
-    # PATCH 9 (GLOBAL): self.state.batch -> self._current_batch
-    # Ensure folder._current_batch is not None and contains 'inputs'
-    if folder._current_batch is None or "inputs" not in folder._current_batch:
-        raise ValueError(
-            "_current_batch is missing or invalid in prepare_refinement_coords"
-        )
-
-    new_atom_mask = folder._current_batch["inputs"]["atom_exists_mask"][0].cpu()
-    new_token_idx = folder._current_batch["inputs"]["atom_token_index"][0].cpu()
-    new_token_asym_id = folder._current_batch["inputs"]["token_asym_id"][0].cpu()
-    new_token_entity_type = folder._current_batch["inputs"]["token_entity_type"][
-        0
-    ].cpu()
-
-    # --- Added: Setup from Function 2 (Needed for Protein Logic) ---
-    parent_atom_within_token = parent_batch_inputs["atom_within_token_index"][
-        0
-    ].cpu()  # Directly access keys
-    # PATCH 9 (GLOBAL): self.state.batch -> self._current_batch
-    new_atom_within_token = folder._current_batch["inputs"]["atom_within_token_index"][
-        0
-    ].cpu()
-    parent_bb_indices = parent_batch_inputs["token_backbone_frame_index"][
-        0
-    ].cpu()  # Directly access keys
-
-    # --- Initialization ---
-    n_atoms_new_padded = new_atom_mask.shape[0]
-    new_padded = torch.zeros(n_atoms_new_padded, 3)
-
-    # --- Chain Matching Logic (from Function 1) ---
-    parent_atom_asym_id = parent_token_asym_id[parent_token_idx]
-    new_atom_asym_id = new_token_asym_id[new_token_idx]
-    parent_atom_entity_type = parent_token_entity_type[parent_token_idx]
-    new_atom_entity_type = new_token_entity_type[new_token_idx]
-
-    parent_asym_ids = torch.unique(parent_atom_asym_id[parent_atom_mask])
-    new_asym_ids = torch.unique(new_atom_asym_id[new_atom_mask])
-    common_asym_ids = set(parent_asym_ids.tolist()) & set(new_asym_ids.tolist())
-
-    for asym_id in sorted(common_asym_ids):
-        parent_chain_mask = (parent_atom_asym_id == asym_id) & parent_atom_mask
-        new_chain_mask = (new_atom_asym_id == asym_id) & new_atom_mask
-
-        # Get entity type (assuming all atoms in chain have same type)
-        # Add check for empty mask to prevent indexing error
-        if not parent_chain_mask.any() or not new_chain_mask.any():
-            continue
-
-        parent_entity = parent_atom_entity_type[parent_chain_mask][0].item()
-        new_entity = new_atom_entity_type[new_chain_mask][0].item()
-
-        assert parent_entity == new_entity, f"Chain {asym_id} changed entity type!"
-
-        # --- Ligand Logic (from Function 1) ---
-        if parent_entity == EntityType.LIGAND.value:
-            parent_indices = torch.where(parent_chain_mask)[0]
-            new_indices = torch.where(new_chain_mask)[0]
-
-            assert len(parent_indices) == len(new_indices), (
-                f"Ligand atom count mismatch! Parent: {len(parent_indices)}, New: {len(new_indices)}"
-            )
-
-            new_padded[new_indices] = parent_padded[parent_indices]
-
-        elif parent_entity == EntityType.PROTEIN.value:
-            # Find common tokens *within this chain*
-            parent_tokens_in_chain = parent_token_idx[parent_chain_mask]
-            new_tokens_in_chain = new_token_idx[new_chain_mask]
-
-            common_tokens = set(torch.unique(parent_tokens_in_chain).tolist()) & set(
-                torch.unique(new_tokens_in_chain).tolist()
-            )
-
-            for token_id in common_tokens:
-                # Get masks for this specific token
-                parent_token_atoms_mask = (
-                    parent_token_idx == token_id
-                ) & parent_atom_mask
-                new_token_atoms_mask = (new_token_idx == token_id) & new_atom_mask
-
-                # 1. Find/calculate parent CB position
-                parent_CB_atoms = parent_token_atoms_mask & (
-                    parent_atom_within_token == 3
-                )  # 3 = CB
-                if parent_CB_atoms.any():
-                    CB_pos = parent_padded[parent_CB_atoms][0]
-                else:
-                    # Glycine case: calculate CB (assuming 'extend' is defined)
-                    N_idx, CA_idx, C_idx = parent_bb_indices[token_id]
-                    N, CA, C = (
-                        parent_padded[N_idx],
-                        parent_padded[CA_idx],
-                        parent_padded[C_idx],
-                    )
-                    CB_pos = extend(
-                        C, N, CA, 1.522, 1.927, -2.143
-                    )  # Magic numbers from F2
-
-                # 2. Set all new token atoms to this CB position
-                new_padded[new_token_atoms_mask] = CB_pos
-
-                # 3. Overwrite backbone atoms (N, CA, C, O, CB)
-                for atom_idx in [0, 1, 2, 3, 4]:
-                    parent_atoms = parent_token_atoms_mask & (
-                        parent_atom_within_token == atom_idx
-                    )
-                    new_atoms = new_token_atoms_mask & (
-                        new_atom_within_token == atom_idx
-                    )
-
-                    if parent_atoms.any() and new_atoms.any():
-                        # Ensure we're only taking the first (and only) atom
-                        new_padded[new_atoms] = parent_padded[parent_atoms][0]
-
-    # Return the compact, unpadded tensor for the new structure
-    return new_padded[new_atom_mask]
-
-
-def is_smiles(seq):
-    """Detect if sequence is SMILES string vs protein sequence"""
-    smiles_chars = set("()[]=#@+-0123456789")
-    return bool(set(seq.upper()) & smiles_chars)
-
-
-def kabsch_rotation_matrix(
-    mobile_centered: Tensor,
-    target_centered: Tensor,
-    weights: Optional[Tensor] = None,
-) -> Tensor:
-    """
-    Compute optimal rotation matrix using Kabsch algorithm.
-
-    Args:
-        mobile_centered: [N, 3] centered coordinates to rotate
-        target_centered: [N, 3] centered reference coordinates
-        weights: Optional [N, 1] weights for each point
-
-    Returns:
-        [3, 3] rotation matrix
-    """
-    # Compute covariance matrix
-    if weights is not None:
-        H = mobile_centered.T @ (weights * target_centered)
-    else:
-        H = mobile_centered.T @ target_centered
-
-    # SVD
-    U, S, Vt = torch.linalg.svd(H)
-    R = U @ Vt
-
-    # Handle reflection case
-    if torch.det(R) < 0:
-        Vt[-1, :] *= -1
-        R = U @ Vt
-
-    return R
-
-
-def weighted_kabsch_align(
-    mobile: Tensor,
-    target: Tensor,
-    weights: Optional[Tensor] = None,
-    mobile_mask: Optional[Tensor] = None,
-    target_mask: Optional[Tensor] = None,
-) -> Tensor:
-    # Handle masks - use subset for alignment computation
-    if mobile_mask is not None and target_mask is not None:
-        mobile_sub = mobile[mobile_mask]
-        target_sub = target[target_mask]
-        weights_sub = weights[mobile_mask] if weights is not None else None
-    else:
-        mobile_sub = mobile
-        target_sub = target
-        weights_sub = weights
-
-    # Expand weights if needed
-    if weights_sub is not None and weights_sub.ndim == 1:
-        weights_sub = weights_sub.unsqueeze(-1)
-
-    # Compute weighted centroids from subset
-    if weights_sub is not None:
-        weights_sum = weights_sub.sum(dim=0, keepdim=True).clamp(min=1e-8)
-        centroid_mobile = (mobile_sub * weights_sub).sum(
-            dim=0, keepdim=True
-        ) / weights_sum
-        centroid_target = (target_sub * weights_sub).sum(
-            dim=0, keepdim=True
-        ) / weights_sum
-    else:
-        centroid_mobile = mobile_sub.mean(dim=0, keepdim=True)
-        centroid_target = target_sub.mean(dim=0, keepdim=True)
-
-    # Center subset coordinates
-    mobile_sub_centered = mobile_sub - centroid_mobile
-    target_sub_centered = target_sub - centroid_target
-
-    # Compute rotation matrix from subset
-    R = kabsch_rotation_matrix(mobile_sub_centered, target_sub_centered, weights_sub)
-
-    # Apply transformation to ALL mobile coordinates
-    mobile_centered = mobile - centroid_mobile
-    mobile_aligned = mobile_centered @ R + centroid_target
-
-    return mobile_aligned
-
-
-def compute_rmsd(
-    coords1: Tensor, coords2: Tensor, mask: Optional[Tensor] = None
-) -> float:
-    if mask is not None:
-        coords1 = coords1[mask]
-        coords2 = coords2[mask]
-
-    return torch.sqrt(torch.mean((coords1 - coords2) ** 2)).item()
-
-
-def compute_ca_rmsd(
-    coords1: Tensor,
-    coords2: Tensor,
-    mode: str = "all",
-    n_target: Optional[int] = None,
-) -> float:
-    """
-    Compute CA/reference atom RMSD with different alignment modes.
-
-    Args:
-        coords1: [N, 3, 3] backbone coordinates (N-CA-C)
-        coords2: [N, 3, 3] backbone coordinates
-        mode: Alignment mode:
-            - "all": Align all atoms, measure all RMSD
-            - "target_align_binder_rmsd": Align by target, measure binder RMSD
-            - "binder_align_ligand_com_rmsd": Align by binder, measure ligand COM distance
-        n_target: Number of target residues (required for multi-chain modes)
-
-    Returns:
-        RMSD or distance value as float
-    """
-    # Extract CA atoms (middle atom)
-    coords1 = coords1[:, 1, :].clone().float()
-    coords2 = coords2[:, 1, :].clone().float()
-
-    if mode == "target_align_binder_rmsd":
-        # Create mask for target region
-        n_total = coords1.shape[0]
-        target_mask = torch.zeros(n_total, dtype=bool, device=coords1.device)
-        target_mask[:n_target] = True
-
-        # Align coords2 to coords1 using ONLY target region
-        coords2_aligned = weighted_kabsch_align(
-            coords2,
-            coords1,
-            mobile_mask=target_mask,
-            target_mask=target_mask,
-        )
-
-        # Extract binder regions and measure RMSD
-        binder_mask = ~target_mask
-        return compute_rmsd(coords1, coords2_aligned, mask=binder_mask)
-
-    elif mode == "binder_align_ligand_com_rmsd":
-        # Split into ligand and binder
-        ligand1, binder1 = coords1[:n_target], coords1[n_target:]
-        ligand2, binder2 = coords2[:n_target], coords2[n_target:]
-
-        # Compute ligand centers of mass
-        ligand_com1 = ligand1.mean(dim=0)
-        ligand_com2 = ligand2.mean(dim=0)
-
-        # Align binder2 to binder1
-        binder2_aligned = weighted_kabsch_align(binder2, binder1)
-
-        # Get transformation parameters from binder alignment
-        centroid_binder1 = binder1.mean(dim=0)
-        centroid_binder2 = binder2.mean(dim=0)
-        binder1_centered = binder1 - centroid_binder1
-        binder2_centered = binder2 - centroid_binder2
-        R = kabsch_rotation_matrix(binder2_centered, binder1_centered)
-
-        # Apply same transformation to ligand COM
-        ligand_com2_aligned = (ligand_com2 - centroid_binder2) @ R + centroid_binder1
-
-        # Return distance between ligand COMs
-        return torch.sqrt(torch.sum((ligand_com1 - ligand_com2_aligned) ** 2)).item()
-
-    else:
-        # Simple case: align everything, measure everything
-        coords2_aligned = weighted_kabsch_align(coords2, coords1)
-        return compute_rmsd(coords1, coords2_aligned)
-
-
-def extract_backbone_from_cif(cif_file):
-    """Extract N, CA, C backbone coordinates from CIF file."""
-    import gemmi
-
-    structure = gemmi.read_structure(str(cif_file))
-    backbone_coords = []
-
-    for model in structure:
-        for chain in model:
-            for residue in chain:
-                bb_atoms = []
-                for atom_name in ["N", "CA", "C"]:
-                    atom = residue.find_atom(atom_name, "*")
-                    if atom:
-                        pos = atom.pos
-                        bb_atoms.append([pos.x, pos.y, pos.z])
-                    else:
-                        # Missing atom - use dummy coords or skip residue
-                        bb_atoms.append([0.0, 0.0, 0.0])
-
-                if len(bb_atoms) == 3:
-                    backbone_coords.append(bb_atoms)
-
-    # Shape: [n_tokens, 3, 3] matching get_backbone_coords_from_result
-    return torch.tensor(backbone_coords, dtype=torch.float32)
-
+# import os
+# import numpy as np
+# import yaml
+# import torch
+# import random
+# from torch import Tensor
+# import gemmi
+# from chai_lab.chai1 import _bin_centers
+# from chai_lab.data.parsing.structure.entity_type import EntityType
+# from typing import Optional
+# import gc
+# import sys
+# import re
+# import py2Dmol
+# import matplotlib.pyplot as plt
+# from matplotlib.ticker import MaxNLocator
+
+# sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+# from chai_ph.predict import ChaiFolder
+# from LigandMPNN.wrapper import LigandMPNNWrapper
+# from utils.alphafold_utils import run_alphafold_step
 
 def optimize_protein_design(
-    folder,
-    designer,
-    initial_seq,
-    target_seq=None,
-    target_pdb=None,
-    target_chain=None,
-    binder_mode="protein",
-    prefix="test",
-    n_steps=5,
-    num_trunk_recycles=3,
-    num_diffn_timesteps=200,
-    num_diffn_samples=1,
-    temperature=0.1,
-    use_esm=False,
-    use_esm_target=False,
-    use_alignment=True,
-    align_to="all",
-    scale_temp_by_plddt=False,
-    partial_diffusion=0.0,
-    pde_cutoff_intra=1.5,
-    pde_cutoff_inter=3.0,
-    high_iptm_threshold=0.8,
-    omit_AA=None,
-    bias_AA=None,
-    randomize_template_sequence=True,
-    cyclic=False,
-    final_validation=True,
-    verbose=False,
-    viewer=None,
-    render_freq=1,
-    plot=False,
+    folder: ChaiFolder,
+    designer: LigandMPNNWrapper,
+    initial_seq: str,
+    target_seq: Optional[str] = None,
+    target_pdb: Optional[str] = None,
+    target_chain: Optional[str] = None,
+    binder_mode: str = "protein",
+    prefix: str = "test",
+    n_steps: int = 5,
+    num_trunk_recycles: int = 3,
+    num_diffn_timesteps: int = 200,
+    num_diffn_samples: int = 1,
+    temperature: float = 0.1,
+    use_esm: bool = False,
+    use_esm_target: bool = False,
+    use_alignment: bool = True,
+    align_to: str = "all",
+    scale_temp_by_plddt: bool = False,
+    partial_diffusion: float = 0.0,
+    pde_cutoff_intra: float = 1.5,
+    pde_cutoff_inter: float = 3.0,
+    high_iptm_threshold: float = 0.8,
+    omit_AA: Optional[str] = None,
+    bias_AA: Optional[str] = None,
+    randomize_template_sequence: bool = True,
+    cyclic: bool = False,
+    final_validation: bool = True,
+    verbose: bool = False,
+    viewer: Optional[py2Dmol.view] = None,
+    render_freq: int = 1,
+    plot: bool = False,
 ):
     """
     Optimize protein design through iterative folding and sequence design.

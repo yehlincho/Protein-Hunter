@@ -5,7 +5,7 @@
 </p>
 
 <p align="center" style="font-size:90%">
-  <em>
+  <em>DAlphaBall.gcc
     <strong>Note:</strong> Logo is a ChatGPT-modified version of the Netflix animation and is for illustration only.
   </em>
 </p>

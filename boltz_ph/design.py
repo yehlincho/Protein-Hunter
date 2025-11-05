@@ -1,7 +1,7 @@
 import argparse
 import os
 
-from core import ProteinHunter_Boltz
+from pipeline import ProteinHunter_Boltz
 
 
 # Keep parse_args() here for CLI functionality
