@@ -16,6 +16,10 @@ within diffusion for protein design](https://www.biorxiv.org/content/10.1101/202
 
 ---
 
+
+## 📝 Colab Notebook
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yehlincho/Protein-Hunter/blob/main/protein_hunter_chai_colab.ipynb)
+
 ## 🚀 Quick Start
 
 ### Installation
