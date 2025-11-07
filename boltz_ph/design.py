@@ -3,6 +3,15 @@ import os
 
 from pipeline import ProteinHunter_Boltz
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 # Keep parse_args() here for CLI functionality
 def parse_args():
@@ -46,7 +55,12 @@ def parse_args():
     parser.add_argument(
         "--template_cif_chain_id", default="", type=str
     )  # for mmCIF files, the chain id to use for the template (for alignment)
-    parser.add_argument("--no_potentials", type=bool, default=True)
+    parser.add_argument(
+        "--no_potentials",
+        type=str2bool,
+        default=True,
+        help="Disable potentials (True/False)"
+    )
     parser.add_argument("--diffuse_steps", default=200, type=int)
     parser.add_argument("--recycling_steps", default=3, type=int)
     parser.add_argument("--boltz_model_version", default="boltz2", type=str)
@@ -116,13 +130,19 @@ def parse_args():
 
     return parser.parse_args()
 
+def print_args(args):
+    print("="*40)
+    print("Design Configuration:")
+    for k, v in vars(args).items():
+        print(f"{k:30}: {v}")
+    print("="*40)
 
 def main():
     args = parse_args()
-    # Instantiate the main class and run the pipeline
+    # Pretty print each argument in a row for better visualization
+    print_args(args)
     protein_hunter = ProteinHunter_Boltz(args)
     protein_hunter.run_pipeline()
-
 
 if __name__ == "__main__":
     main()
