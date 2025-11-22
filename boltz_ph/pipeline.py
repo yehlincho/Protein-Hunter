@@ -35,7 +35,7 @@ from model_utils import (
     smart_split,
 )
 
-# --- ipAE / ipSAE helpers (inspired by refiner_boltz2.py) ---
+# --- ipAE / ipSAE helpers
 
 def extract_cb_coords(structure, coords):
 
@@ -54,7 +54,6 @@ def extract_cb_coords(structure, coords):
             cb_coord = None
             ca_coord = None
 
-            # Find CB or CA exactly like extract_ca_coords
             for local_i, atom in enumerate(residue_atoms):
                 name = atom["name"]
 
