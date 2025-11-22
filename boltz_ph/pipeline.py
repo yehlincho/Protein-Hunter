@@ -38,17 +38,6 @@ from model_utils import (
 # --- ipAE / ipSAE helpers (inspired by refiner_boltz2.py) ---
 
 def extract_cb_coords(structure, coords):
-    """
-    Extract per-residue coordinates suitable for interface-distance
-    calculations (matches ipsae.py logic):
-
-        - Use CB atom if present
-        - For GLY, use CA instead
-        - If neither found (very rare), fall back to centroid of residue atoms
-
-    Returns:
-        np.ndarray of shape (L_res, 3)
-    """
 
     atom_coords = coords[0].detach().cpu().numpy()  # (N_atoms, 3)
     cb_list = []
@@ -62,45 +51,36 @@ def extract_cb_coords(structure, coords):
             a1 = a0 + res["atom_num"]
             residue_atoms = structure.atoms[a0:a1]
 
-            residue_name = res["name"] if "name" in res else res.get("resname", "")
-
-            cb_found = False
-            ca_found = False
+            cb_coord = None
             ca_coord = None
 
-            # Search for CB and CA
+            # Find CB or CA exactly like extract_ca_coords
             for local_i, atom in enumerate(residue_atoms):
                 name = atom["name"]
 
-                # CA always recorded (needed for Gly)
+                if name == "CB":
+                    cb_coord = atom_coords[a0 + local_i]
+                    break  # prefer CB immediately
+
                 if name == "CA":
-                    ca_found = True
                     ca_coord = atom_coords[a0 + local_i]
 
-                # CB only for non-Gly residues
-                if name == "CB":
-                    cb_list.append(atom_coords[a0 + local_i])
-                    cb_found = True
-                    break
-
-            if cb_found:
+            # Use CB if present
+            if cb_coord is not None:
+                cb_list.append(cb_coord)
                 continue
 
-            # Glycine → use CA
-            if residue_name.upper() == "GLY" and ca_found:
+            # Use CA if present (covers Gly automatically)
+            if ca_coord is not None:
                 cb_list.append(ca_coord)
                 continue
 
-            # If CB missing but CA present → fallback to CA
-            if ca_found:
-                cb_list.append(ca_coord)
-                continue
-
-            # Ultimate fallback → centroid
+            # Fallback: centroid (same as extract_ca_coords)
             meanpos = atom_coords[a0:a1].mean(axis=0)
             cb_list.append(meanpos)
 
     return np.array(cb_list)
+
 
 
 
