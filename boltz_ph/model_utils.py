@@ -654,8 +654,8 @@ def plot_run_metrics(
     run_save_dir: str, name: str, run_id: int, num_cycles: int, run_metrics: dict
 ):
     """Plots per-run metrics (iPTM, pLDDT, Alanine Count) over design cycles."""
-    fig, axs = plt.subplots(1, 4, figsize=(16, 4)) # Increased figure width
-    colors = ["#9B59B6", "#E94560", "#FF7F11", "#2ECC71"]
+    fig, axs = plt.subplots(1, 5, figsize=(20, 4)) # Increased figure width
+    colors = ["#9B59B6", "#E94560", "#FF7F11", "#2ECC71", "#1673EC"]
     
     # Helper to retrieve data and format
     def get_metric_data(key_suffix, label, ymin, ymax, fmt):
@@ -673,6 +673,7 @@ def plot_run_metrics(
             max([run_metrics.get(f"cycle_{i}_alanine", 0) for i in range(num_cycles + 1)]) + 2, 
             "{}",
         ),
+        get_metric_data("ipsae_min",   "ipSAE_min",    0, 1,       "{:.3f}"),
     ]
     
     design_cycles = list(range(num_cycles + 1))
